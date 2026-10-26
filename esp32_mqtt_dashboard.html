@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 MQTT Dashboard</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+:root { color-scheme: dark; --bg:#0b1220; --panel:#121c2e; --line:#263650; --text:#edf4ff; --muted:#9fb0c8; --blue:#66b5ff; --green:#40d6a0; --red:#ff7185; }
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at top,#152745 0,#0b1220 55%);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);min-height:100vh}
+main{max-width:1120px;margin:auto;padding:28px 18px 40px}
+header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+h1{margin:0;font-size:clamp(1.5rem,3vw,2.15rem)} .sub{color:var(--muted);margin-top:6px}
+.pill{border:1px solid var(--line);border-radius:999px;padding:8px 13px;color:var(--muted);font-size:.9rem}
+.pill:before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:#718096;margin-right:8px}
+.pill.ok:before{background:var(--green)} .pill.err:before{background:var(--red)}
+.panel{background:rgba(18,28,46,.92);border:1px solid var(--line);border-radius:18px;padding:20px;margin-bottom:18px;box-shadow:0 12px 32px #0002}
+h2{font-size:1.05rem;margin:0 0 16px}
+.settings{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+label{display:block;font-size:.82rem;color:var(--muted);margin-bottom:6px}
+input{width:100%;background:#0b1424;border:1px solid #31435e;border-radius:9px;padding:11px;color:var(--text);font:inherit}
+.actions{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+button{border:0;border-radius:10px;padding:11px 16px;background:var(--blue);color:#061426;font-weight:700;cursor:pointer;font:inherit}
+button.secondary{background:#263650;color:var(--text)} button:disabled{opacity:.5;cursor:not-allowed}
+.note{color:var(--muted);font-size:.85rem;line-height:1.5;margin:12px 0 0}
+.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.metric{position:relative;overflow:hidden}
+.metric:after{content:"";position:absolute;width:110px;height:110px;border-radius:50%;right:-35px;top:-40px;background:#66b5ff10}
+.metric .label{color:var(--muted);font-size:.95rem}
+.value{font-size:clamp(2.5rem,6vw,4rem);font-weight:750;letter-spacing:-.04em;margin:10px 0 2px}
+.unit{font-size:1.2rem;color:var(--muted);font-weight:500}
+.statusline{color:var(--muted);font-size:.85rem}
+.chartbox{height:320px}
+footer{color:var(--muted);font-size:.82rem;text-align:center;margin-top:22px}
+@media(max-width:760px){.settings{grid-template-columns:repeat(2,minmax(0,1fr))}.cards{grid-template-columns:1fr}.chartbox{height:270px}}
+@media(max-width:430px){.settings{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>ESP32 Sensor Dashboard</h1><div class="sub">อุณหภูมิและความชื้นจาก DHT22 ผ่าน MQTT</div></div>
+    <div id="status" class="pill">ยังไม่ได้เชื่อมต่อ</div>
+  </header>
+
+  <section class="panel">
+    <h2>การเชื่อมต่อ MQTT</h2>
+    <div class="settings">
+      <div><label for="host">Broker Host</label><input id="host" value="broker.hivemq.com"></div>
+      <div><label for="port">WebSocket Port</label><input id="port" value="8884" inputmode="numeric"></div>
+      <div><label for="path">Path</label><input id="path" value="/mqtt"></div>
+      <div><label for="clientId">Client ID (ไม่ซ้ำ)</label><input id="clientId"></div>
+      <div><label for="tempTopic">Topic อุณหภูมิ</label><input id="tempTopic" value="esp32s3demo/unique12345/temperature"></div>
+      <div><label for="humTopic">Topic ความชื้น</label><input id="humTopic" value="esp32s3demo/unique12345/humidity"></div>
+      <div class="actions" style="grid-column:span 2">
+        <button id="connectBtn" onclick="connectMQTT()">Connect</button>
+        <button id="disconnectBtn" class="secondary" onclick="disconnectMQTT()" disabled>Disconnect</button>
+      </div>
+    </div>
+    <p class="note">ESP32 ใช้ MQTT TCP port 1883 ส่วน Dashboard ในเบราว์เซอร์ใช้ Secure WebSocket (WSS) port 8884 และ path /mqtt โดยเชื่อมต่อ Broker เดียวกัน</p>
+    <p class="note">หากเปลี่ยนชื่อ Topic ในโค้ด Arduino ให้เปลี่ยน Topic ใน Dashboard ให้ตรงกันทุกตัวอักษร</p>
+  </section>
+
+  <section class="cards">
+    <div class="panel metric">
+      <div class="label">อุณหภูมิ</div>
+      <div class="value"><span id="temperature">--.-</span> <span class="unit">°C</span></div>
+      <div id="tempTime" class="statusline">รอข้อมูลจาก MQTT</div>
+    </div>
+    <div class="panel metric">
+      <div class="label">ความชื้นสัมพัทธ์</div>
+      <div class="value"><span id="humidity">--.-</span> <span class="unit">%</span></div>
+      <div id="humTime" class="statusline">รอข้อมูลจาก MQTT</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>กราฟข้อมูลล่าสุด</h2>
+    <div class="chartbox"><canvas id="sensorChart"></canvas></div>
+    <p class="note">กราฟเก็บค่าที่ได้รับไว้ในหน้านี้ชั่วคราว (สูงสุด 30 จุด) ไม่ได้บันทึกลงฐานข้อมูลถาวร</p>
+  </section>
+  <footer>MQTT Dashboard • ใช้สำหรับทดลองกับข้อมูลเซนเซอร์เท่านั้น</footer>
+</main>
+<script>
+const clientIdInput = document.getElementById('clientId');
+clientIdInput.value = 'webdash_' + Math.random().toString(16).slice(2, 10);
+let mqttClient = null;
+let labels = [], temps = [], hums = [];
+const ctx = document.getElementById('sensorChart');
+const chart = new Chart(ctx, {
+  type:'line',
+  data:{labels, datasets:[
+    {label:'อุณหภูมิ (°C)', data:temps, borderColor:'#66b5ff', backgroundColor:'#66b5ff22', tension:.28, yAxisID:'y', pointRadius:2},
+    {label:'ความชื้น (%)', data:hums, borderColor:'#40d6a0', backgroundColor:'#40d6a022', tension:.28, yAxisID:'y1', pointRadius:2}
+  ]},
+  options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{labels:{color:'#edf4ff'}}},
+    scales:{x:{ticks:{color:'#9fb0c8',maxTicksLimit:8},grid:{color:'#263650'}},
+      y:{position:'left',title:{display:true,text:'°C',color:'#66b5ff'},ticks:{color:'#9fb0c8'},grid:{color:'#263650'}},
+      y1:{position:'right',title:{display:true,text:'%',color:'#40d6a0'},ticks:{color:'#9fb0c8'},grid:{drawOnChartArea:false}}}}
+});
+function setStatus(text, kind='') {
+  const el = document.getElementById('status');
+  el.textContent = text; el.className = 'pill ' + kind;
+}
+function connectMQTT() {
+  if (typeof mqtt === 'undefined') { setStatus('โหลด MQTT library ไม่สำเร็จ','err'); return; }
+  if (mqttClient) { try { mqttClient.end(true); } catch(e){} }
+  const host = document.getElementById('host').value.trim();
+  const port = document.getElementById('port').value.trim();
+  let path = document.getElementById('path').value.trim();
+  if (path && !path.startsWith('/')) path = '/' + path;
+  const url = `wss://${host}:${port}${path}`;
+  setStatus('กำลังเชื่อมต่อ…');
+  mqttClient = mqtt.connect(url, {
+    clientId: clientIdInput.value.trim() || ('webdash_' + Math.random().toString(16).slice(2,10)),
+    clean:true, connectTimeout:10000, reconnectPeriod:3000, keepalive:60
+  });
+  mqttClient.on('connect', () => {
+    setStatus('เชื่อมต่อแล้ว','ok');
+    document.getElementById('connectBtn').disabled = true;
+    document.getElementById('disconnectBtn').disabled = false;
+    const topics = [document.getElementById('tempTopic').value.trim(), document.getElementById('humTopic').value.trim()];
+    mqttClient.subscribe(topics, {qos:0}, (err) => { if (err) setStatus('เชื่อมต่อแล้ว แต่ Subscribe ไม่สำเร็จ','err'); });
+  });
+  mqttClient.on('reconnect', () => setStatus('กำลังเชื่อมต่อใหม่…'));
+  mqttClient.on('error', (err) => { setStatus('มีข้อผิดพลาดในการเชื่อมต่อ','err'); console.error(err); });
+  mqttClient.on('close', () => {
+    if (mqttClient) setStatus('การเชื่อมต่อปิดแล้ว');
+    document.getElementById('connectBtn').disabled = false;
+    document.getElementById('disconnectBtn').disabled = true;
+  });
+  mqttClient.on('message', (topic, payload) => {
+    const value = Number(payload.toString());
+    if (!Number.isFinite(value)) return;
+    const now = new Date().toLocaleTimeString('th-TH');
+    if (topic === document.getElementById('tempTopic').value.trim()) {
+      document.getElementById('temperature').textContent = value.toFixed(1);
+      document.getElementById('tempTime').textContent = 'อัปเดตล่าสุด ' + now;
+      latestTemp = value;
+    } else if (topic === document.getElementById('humTopic').value.trim()) {
+      document.getElementById('humidity').textContent = value.toFixed(1);
+      document.getElementById('humTime').textContent = 'อัปเดตล่าสุด ' + now;
+      latestHum = value;
+    } else return;
+    addChartPoint(now);
+  });
+}
+let latestTemp = null, latestHum = null, lastChartLabel = '';
+function addChartPoint(now) {
+  if (latestTemp === null || latestHum === null) return;
+  if (now === lastChartLabel) {
+    labels[labels.length-1] = now; temps[temps.length-1] = latestTemp; hums[hums.length-1] = latestHum;
+  } else {
+    lastChartLabel = now; labels.push(now); temps.push(latestTemp); hums.push(latestHum);
+    if (labels.length > 30) { labels.shift(); temps.shift(); hums.shift(); }
+  }
+  chart.update('none');
+}
+function disconnectMQTT() {
+  if (mqttClient) { mqttClient.end(true); mqttClient = null; }
+  setStatus('ตัดการเชื่อมต่อแล้ว');
+  document.getElementById('connectBtn').disabled = false;
+  document.getElementById('disconnectBtn').disabled = true;
+}
+</script>
+</body>
+</html>
